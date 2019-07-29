@@ -4,18 +4,18 @@
       <button class="upload-button choice-file-button">选择文件</button>
       <input class="choice-file-input" type="file" @change="fileInputChangeHandle">
     </div>
-    <button v-if="!autoUpload" class="upload-button" @click="upload">上传</button>
+    <button v-if="!autoUpload" class="upload-button" @click="uploadHandle('all')">上传</button>
     <div class="upload-list">
       <li v-for="(file, index) in files" :key="index">
         <a>
           <span class="uploadicon icon-file " />
           <span class="file-name">{{ file.name }}</span>
-          <span class="uploadicon icon-check-circle" v-if="file.status === 'success'"></span>
-          <span class="uploadicon icon-delete" @click="delFile(index)" v-if="index != uploadFileIndex && file.status != 'success'" />
-          <template v-if="index === uploadFileIndex && file.status != 'success' ">
-            <span class="uploadicon icon-play-circle-fill" v-if="isPause && uploadPercent>5" @click="goOnUpload "></span>
-            <span class="uploadicon icon-poweroff-circle-fill" v-if="!isPause && uploadPercent>5" @click="pauseUpload "></span>
-            <div class="progress-bar" :style="'width:'+uploadPercent+'%'" >
+          <span v-if="file.status === uploadStatus.SUCCESS" class="uploadicon icon-check-circle" />
+          <span v-if="file.status === uploadStatus.INIT" class="uploadicon icon-delete" @click="delFile(index)" />
+          <template v-if="file.status != uploadStatus.SUCCESS ">
+            <span v-if="file.status === uploadStatus.PAUSE && file.percent>5" class="uploadicon icon-play-circle-fill" @click="goOnUpload(index)" />
+            <span v-if="file.status === uploadStatus.UPLOADING && file.percent>5" class="uploadicon icon-poweroff-circle-fill" @click="pauseUpload(index)" />
+            <div class="progress-bar" :style="'width:'+file.percent+'%'">
               <div class="progress-bar-rate" />
             </div>
           </template>
@@ -28,6 +28,14 @@
 import SparkMD5 from 'spark-md5'
 import axios from 'axios'
 import qs from 'qs'
+
+const UPLOAD_STATUS = {
+  INIT: 0,
+  UPLOADING: 1,
+  PAUSE: 2,
+  SUCCESS: 3,
+  FAIL: 4
+}
 
 export default {
   props: {
@@ -51,15 +59,11 @@ export default {
   data() {
     return {
       files: [],
-      uploadFileIndex: -1,
-      uploadFileInfo: {},
-      uploadPercent: 0,
-      isPause:false,
-      pauseLoadIndex:-1
+      uploadStatus: UPLOAD_STATUS
     }
   },
   methods: {
-    getFileInfo(file, chunkSize) {
+    getFileInfo(file, chunkSize, fileIndex) {
       return new Promise((resolver, reject) => {
         const blobSlice = File.prototype.slice || File.prototype.mozSlice || File.prototype.webkitSlice
         const chunks = Math.ceil(file.size / chunkSize)
@@ -79,7 +83,7 @@ export default {
         fileReader.onload = (e) => {
           spark.append(e.target.result)
           currentChunk++
-          this.updateUploadPercent(currentChunk, chunks, true)
+          this.files[fileIndex].percent = this.updateUploadPercent(currentChunk, chunks, true)
           if (currentChunk < chunks) {
             loadNext()
           } else {
@@ -110,59 +114,85 @@ export default {
     },
     fileInputChangeHandle(event) {
       const file = event.target.files[0]
-      this.files.push(file)
+      this.files.push({
+        name: file.name,
+        file: file,
+        percent: 0,
+        pauseLoadIndex: 0,
+        uploadFileInfo: {},
+        status: UPLOAD_STATUS.INIT
+      })
       if (this.autoUpload) {
-        this.uploadFileIndex = this.files.length -1
-        this.uploadPercent = 0
-        this.uploadHandle()
+        this.uploadHandle('last')
       }
     },
     delFile(index) {
       this.files.splice(index, 1)
     },
-    uploadHandle() {
-      this.getFileInfo(this.files[this.uploadFileIndex], this.chunkSize).then(r => {
-        this.uploadFileInfo = r
-        this.uploadCheck()
+    uploadHandle(type) {
+      const uploadSingle = (index) => {
+        this.getFileInfo(this.files[index].file, this.chunkSize, index).then(r => {
+          this.files[index].status = UPLOAD_STATUS.UPLOADING
+          this.files[index].uploadFileInfo = r
+          this.$set(this.files, index, this.files[index])
+          this.uploadCheck(this.files[index].uploadFileInfo.hash).then(result => {
+            if (result != '') {
+              this.uploadFile(Number(result), index)
+            } else {
+              this.uploadFile(0, index)
+            }
+          })
+        })
+      }
+      if (type === 'last') {
+        uploadSingle(this.files.length - 1)
+      }
+      if (type === 'all') {
+        this.files.map((item, index) => {
+          if (item.start != UPLOAD_STATUS.SUCCESS) {
+            uploadSingle(index)
+          }
+        })
+      }
+    },
+    uploadCheck(hash) {
+      return new Promise((resolve, reject) => {
+        axios.post(this.uploadCheckUrl, qs.stringify({
+          hash: hash
+        }), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }}).then((response) => {
+          const index = response.data
+          return resolve(index)
+        }).catch((error) => {
+          return reject(error)
+        })
       })
     },
-    uploadCheck() {
-      axios.post(this.uploadCheckUrl, qs.stringify({
-        hash: this.uploadFileInfo.hash
-      }), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }}).then((response) => {
-        const index = response.data
-        if (index != '') {
-          this.uploadFile(Number(index))
-        } else {
-          this.uploadFile(0)
-        }
-      }).catch((error) => {
-      })
-    },
-    uploadFile(loadIndex) {
-      if(this.isPause) {
-        this.pauseLoadIndex = loadIndex
+    uploadFile(loadIndex, fileIndex) {
+      if (this.files[fileIndex].status === UPLOAD_STATUS.PAUSE) {
+        this.files[fileIndex].pauseLoadIndex = loadIndex
         return
       }
-      var form = new FormData()
-      form.append('hash', this.uploadFileInfo.hash)
-      form.append('name', this.uploadFileInfo.name)
-      form.append('size', this.uploadFileInfo.size)
-      form.append('shardCount', this.uploadFileInfo.shardCount)
-      form.append('blob', this.uploadFileInfo.shard[loadIndex])
+      const uploadFileInfo = this.files[fileIndex].uploadFileInfo
+      const form = new FormData()
+      form.append('hash', uploadFileInfo.hash)
+      form.append('name', uploadFileInfo.name)
+      form.append('size', uploadFileInfo.size)
+      form.append('shardCount', uploadFileInfo.shardCount)
+      form.append('blob', uploadFileInfo.shard[loadIndex])
       form.append('sdIndex', loadIndex)
 
       axios.post(this.uploadUrl,
         form,
         { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }}).then((response) => {
         const index = Number(response.data) + 1
-        if (index <= this.uploadFileInfo.shardCount) {
-          this.uploadFile(index)
-          this.updateUploadPercent(loadIndex+1, this.uploadFileInfo.shardCount, false)
+        if (index <= uploadFileInfo.shardCount) {
+          this.uploadFile(index, fileIndex)
+          this.files[fileIndex].percent = this.updateUploadPercent(loadIndex + 1, uploadFileInfo.shardCount, false)
+          this.$set(this.files, fileIndex, this.files[fileIndex])
         } else {
-          this.uploadPercent = 0
-          this.files[this.uploadFileIndex].status = 'success'
-          this.$set(this.files, this.uploadFileIndex, this.files[this.uploadFileIndex])
+          this.files[fileIndex].percent = 0
+          this.files[fileIndex].status = UPLOAD_STATUS.SUCCESS
+          this.$set(this.files, fileIndex, this.files[fileIndex])
           alert('上传完毕')
         }
       }).catch((error) => {
@@ -175,14 +205,16 @@ export default {
       } else {
         percent = 5 + parseInt(current / total * 0.95 * 100)
       }
-      this.uploadPercent = percent
+      return percent
     },
-    goOnUpload(){
-      this.isPause = false
-      this.uploadFile(this.pauseLoadIndex)
+    goOnUpload(fileIndex) {
+      this.files[fileIndex].status = UPLOAD_STATUS.UPLOADING
+      this.$set(this.files, fileIndex, this.files[fileIndex])
+      this.uploadFile(this.files[fileIndex].pauseLoadIndex, fileIndex)
     },
-    pauseUpload(){
-      this.isPause = true
+    pauseUpload(fileIndex) {
+      this.files[fileIndex].status = UPLOAD_STATUS.PAUSE
+      this.$set(this.files, fileIndex, this.files[fileIndex])
     }
   }
 }

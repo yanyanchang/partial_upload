@@ -1,11 +1,11 @@
 <template>
   <div id="app">
-    <upload upload-check-url="http://127.0.0.1:8089/api/upload_check" upload-url="http://127.0.0.1:8089/api/upload" />
+    <upload :auto-upload="false" upload-check-url="http://127.0.0.1:8089/api/upload_check" upload-url="http://127.0.0.1:8089/api/upload" />
   </div>
 </template>
 
 <script>
-import Upload from './components/upload'
+import Upload from './components/upload/index'
 export default {
   name: 'App',
   components: {
