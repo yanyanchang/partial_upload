@@ -32,12 +32,9 @@ class upload:
             x = web.input(blob={})
             if 'blob' in x:
                 filePs = uploadFileName + ".part" + sdIndex  # 文件段保存路径
-                # change this to the directory you want to store the file in.
-                # filepath = x.file.filename.replace('\\', '/')  # replaces the windows-style slashes with linux ones.
-                # filename = filepath.split('/')[-1]  # splits the and chooses the last part (the filename with extension)
-                fout = open(sPs + filePs, 'wb')  # creates the file where the uploaded file should be stored
-                fout.write(x.blob.file.read())  # writes the uploaded file to the newly created file.
-                fout.close()  # closes the file, upload complete.
+                fout = open(sPs + filePs, 'wb')
+                fout.write(x.blob.file.read())
+                fout.close()
         return sdIndex  # 返回段索引
 
 
